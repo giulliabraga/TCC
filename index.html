@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arduino BLE Connection</title>
+    <link rel="stylesheet" type="text/css" href="styles.css">
+</head>
+<body>
+
+    <div id="homeView">
+        <button id="startConnectBtn">Conectar ao ArduinoBLE e iniciar medição</button>
+        <button id="disconnectBtn">Desconectar e interromper medição</button>
+    </div>
+
+
+    <div id="resultsView"></div>
+
+
+    <script>
+
+        var homeVisibility = document.getElementById("homeView")
+        var resultsVisibility = document.getElementById("resultsView")
+        let jsonDataArray = []
+
+        // As funções hideHomeView() e backHomeView() são utilizadas para alternar 
+        // a exibição da tela de início e da tela de resultados
+
+        function hideHomeView() {
+            // Ocultando tela de inicio
+            homeVisibility.style.display = "none"
+
+            // Exibindo tela de resultados
+            resultsVisibility.style.display="flex"
+        }
+
+        function backHomeView(){
+            // Exibindo a tela de inicio
+            homeVisibility.style.display = "flex"
+
+            // Ocultando tela de resultados
+            resultsVisibility.style.display="none"
+
+            // Limpando o vetor para o arquivo JSON
+            jsonDataArray=[]
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            let device, server, characteristic;
+            let timestampNow=0;
+            let dados=undefined;
+            let batteryValue=0;
+            const startConnectBtn = document.getElementById('startConnectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+
+
+            startConnectBtn.addEventListener('click', async () => {
+                console.log('Iniciando medicao...')
+                try {
+                    // Será apenas permitida a conexão com o arduino
+                    device = await navigator.bluetooth.requestDevice({
+                        filters: [{ name: 'AnalogSignalMonitor' }],
+                        optionalServices: ['0000180f-0000-1000-8000-00805f9b34fb']
+                    });
+
+                    server = await device.gatt.connect(); // conexão utilizando protocolo GATT
+                    const service = await server.getPrimaryService('0000180f-0000-1000-8000-00805f9b34fb'); // conectando ao serviço
+                    characteristic = await service.getCharacteristic('00002a19-0000-1000-8000-00805f9b34fb'); // conectando à característica
+
+                    console.log('Conectado ao serviço e característica do arduino.'); 
+
+                    // Inicia notificações
+                    notifications = await characteristic.startNotifications();
+                    console.log('Notificaçoes iniciadas, lendo sinal do arduino...')
+
+                    // Evento para registrar quando há notificações da mudança no valor da característica
+                    notifications.addEventListener('characteristicvaluechanged', (event) => { 
+                    const value = event.target.value;
+                    const decodedValue = new TextDecoder().decode(value); // decodificando valor do pacote BLE
+                    analogValue = decodedValue.charCodeAt(0); // convertendo de unicode para valor numérico
+                    console.log('Sinal:', analogValue); 
+                    timestampNow = Date.now(); // registrando carimbo data/hora
+                    console.log('Timestamp: ',timestampNow); 
+                    dados = { "ECG Signal": analogValue, "Timestamp": timestampNow };
+                    console.log('Dados para o JSON: ',dados) // dados como inseridos no vetor, para essa leitura
+                    jsonDataArray.push(dados);
+                    console.log('JSON Array com dados:', jsonDataArray) // status atual do vetor de JSON
+                    });
+
+
+                } catch (error) {
+                    console.error('Erro ao conectar ao dispositivo Bluetooth:', error.message);
+                }
+            });
+
+            disconnectBtn.addEventListener('click', async () => {
+                console.log('Encerrando medicao...')
+                try {
+                    // Iniciando processo de desconexão
+                    if (characteristic) {
+                        console.log('Interrompendo notificacoes...')
+                        await characteristic.stopNotifications();
+                        console.log('Notificacoes interrompidas')
+                    }
+                    if (server) {
+                        console.log('Desconectando do server...')
+                        await server.disconnect();
+                        console.log('Arduino desconectado com sucesso')
+                    }
+
+                    // Criar arquivo JSON
+                    const jsonString = JSON.stringify(jsonDataArray, null, 2);
+
+                    // Configurar a URL da API para o método POST
+                    const apiUrlPost = 'https://giubdam.pythonanywhere.com/upload_ecg_data';
+
+                    // Enviar JSON para a API com o método POST
+                    console.log('Tentando enviar dados para a API e...')
+                    const postResponse = await fetch(apiUrlPost, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: jsonString,
+                    });
+
+                    // Verificar se a requisição foi bem-sucedida
+                    if (postResponse.ok) {
+                        console.log('JSON enviado com sucesso para a API.');
+                    } else {
+                        console.error('Erro ao enviar JSON para a API:', response.status, response.statusText);
+                    }
+
+                    // Configurar a URL da API para o método POST
+                    const apiUrlGet = 'https://giubdam.pythonanywhere.com/process_ecg_data';
+
+
+                    // Receber JSON com imagens e valor da frequência cardíaca usando método GET
+                    console.log('Tentando receber dados da API e...')
+                    const getResponse = await fetch(apiUrlGet, {
+                        method: 'GET',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                    });
+
+                    if (getResponse.ok) {
+                        // Se a resposta for bem-sucedida, obter o JSON da resposta
+                        const jsonData = await getResponse.json();
+
+                        // Mostrar o JSON no console
+                        console.log('Dados recebidos da API com sucesso:', jsonData);
+
+                        hideHomeView(); // sai da tela de início e encaminha para a de resultados
+
+                        // Carrega as informações obtidas da API na tela de resultados
+                        const infoArea = document.getElementById('resultsView');
+                        infoArea.innerHTML = `
+                        <div id="freqArea">
+                        <div class="heart"></div>                            
+                        <h3 id="textoFreq"> ${jsonData.heart_rate} BPM</h3> 
+                            </div>
+                        <h3>Sinal de ECG</h2>
+                        <div id="imageArea1">
+                        <img src="${jsonData.raw_image_url}" />
+                        <img src="${jsonData.cleaned_image_url}" />
+                            </div>
+                        <h3>Frequência Cardíaca</h2>
+                        <div id="imageArea2">
+                        <img src="${jsonData.hr_avg_url}" />
+                        <img src="${jsonData.beats_avg_url}" />
+                            </div> 
+                        <button id="backHomeBtn" onClick="backHomeView()">Voltar à tela de início</button>
+                        `;
+                        
+                    }else{
+                        console.error('Erro ao obter dados da API:', getResponse.status, getResponse.statusText);
+                    }
+                    
+
+                }catch(error){
+                    console.error('Erro ao desconectar: ', error.message)
+                }
+            });
+        
+        });
+    </script>
+
+</body>
+</html>
